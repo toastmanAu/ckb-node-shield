@@ -10,7 +10,8 @@ A task that executed the `ckb` binary, and every task it starts:
 | Rule | Effect |
 |---|---|
 | `exec = []` | It runs no other program: no shell, no `curl`, no miner dropped in `/tmp`. Only `ckb` itself. |
-| no `network` key | Connections stay open to any peer, because a public node needs that. |
+| network (Option A, default) | Connections stay open to any peer, because a public node needs that. |
+| network (Option B, commented out) | Only the networks you list. For private relays or nodes behind a firewall. |
 | `deny.create/rename/write` | It cannot create, rename over or open for writing a file whose **name** is `ckb.toml`, `ckb-miner.toml`, `default.db-options`, `ckb`, `ckb-cli`, `*.so`, `authorized_keys`, `.bashrc`/`.profile`, `*.service`/`*.timer`, `crontab`, `ld.so.preload`, `sudoers`, `passwd` or `shadow`. |
 
 Every refusal is `EACCES`. The node's own work is unaffected: writing
@@ -22,6 +23,22 @@ A target running shirudo: a BPF-LSM kernel with signed BPF programs, a TPM
 and the shirudo runtime. See shirudo's `Documentation/start/install.rst`.
 This shield was tested on shirudo's test VM (shirudo `0e595d8`, kernel
 `7.4-shirudo-ci`) against CKB `v0.210.0`. See [Tested](#tested).
+
+## Choosing the network option
+
+`sandbox.toml` ships both options, and Option B is commented out:
+
+- **Option A, public node (default).** Outbound connections may go
+  anywhere. Leave the Option B lines commented.
+- **Option B, private node.** Uncomment the `[networks]` table and the
+  `network = ["@local", "@peers"]` line, then list your peers in CIDR
+  form. An outbound `connect()` to anything unlisted fails with `EACCES`,
+  and so does a raw or packet socket. Keep `127.0.0.0/8`: the local DNS
+  resolver lives there. Inbound connections (peers dialing you, RPC
+  clients) are never restricted.
+
+Rebuild after changing it. A signed package can also be re-signed with
+new rules, without recompiling, using `shirudo bpm config update`.
 
 ## Install paths
 
@@ -72,8 +89,9 @@ binary to trust. Publish it with `shirudo bpm push` and
 
 ## Tested
 
-`tests/vm-test.sh <upatch dir> <ckb binary>` runs as root on a shirudo
-test VM: 20 checks, all passing, repeatable. It runs two kinds of check:
+`tests/vm-test.sh <upatch dir> <ckb binary> [<Option B upatch dir>]` runs
+as root on a shirudo test VM: 24 checks, all passing, repeatable. It runs
+three kinds of check:
 
 1. **The real node still works.** `ckb` v0.210.0 on a dev chain with the
    shield loaded: RPC answers, it mines with `ckb miner`, and the tip
@@ -83,10 +101,15 @@ test VM: 20 checks, all passing, repeatable. It runs two kinds of check:
    and `authorized_keys`, and creates a `.service` file. Each attempt must
    fail with `EACCES`. With the shield unloaded, the same probe must
    succeed. This control shows the refusals come from the shield.
+3. **Option B restricts the network.** For a build with Option B on and
+   `peers = ["192.0.2.0/24"]`, a connection to the QEMU host (unlisted) is
+   refused, while loopback (listed) still connects. The unloaded control
+   connects to the same host.
 
 ## License
 
 `ckb-node-shield.bpf.c` and `gen_policy.py` are shirudo's `app-sandbox`
 sources, unchanged apart from the header comment, under
-`GPL-2.0 OR BSD-2-Clause` (see `LICENSE.shirudo`). The Beefile, rules,
-tests and docs are under the same terms.
+`GPL-2.0 OR BSD-2-Clause`. The Beefile, rules, tests and docs are under
+the same terms. See `LICENSES/` for both texts. The kernel side has to be
+GPL-compatible to use BPF LSM helpers.

@@ -2,16 +2,29 @@
 #
 # The rules of the ckb sandbox. A pattern matches the LAST component of a
 # path only, so "ckb.toml" covers every ckb.toml on the host.
+#
+# NETWORK: pick ONE of two options.
+#   Option A (default) - public node: it may connect to any peer. Leave
+#     both Option B blocks below commented out.
+#   Option B - private node: it may connect ONLY to the networks you
+#     list. Uncomment the [networks] table here AND the `network = ...`
+#     line under [sandbox.ckb], then put in your own peers. Anything not
+#     listed is refused with EACCES, so list every peer you dial out
+#     to and keep 127.0.0.0/8 for the local DNS resolver. Inbound
+#     connections (peers dialing you, RPC clients) are never restricted.
+
+# --- Option B, part 1 of 2 ---
+# [networks]
+# local = ["127.0.0.0/8", "::1/128"]
+# peers = ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.7/32"]
 
 [sandbox.ckb]
 # A CKB node starts no other program, so it may execute nothing beyond
 # its own binary. This is the rule that stops "exploit, then shell".
 exec = []
 
-# No `network` key: a public node must reach peers anywhere on the
-# internet, so connections stay unrestricted. A node that only talks to
-# a fixed set of peers (a private relay, an RPC-only node behind a
-# firewall) can add e.g.  network = ["10.0.0.0/8", "203.0.113.7/32"]
+# --- Option B, part 2 of 2 --- (Option A: leave this commented out)
+# network = ["@local", "@peers"]
 
 [sandbox.ckb.deny]
 # What the node never needs to write while it runs: its own config and

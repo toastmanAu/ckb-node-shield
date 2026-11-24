@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: BSD-2-Clause
 #
 # usage (as root on a shirudo target, NOT a production node):
-#   vm-test.sh <dir with ckb-node-shield.upatch + .unload.upatch> <ckb binary>
+#   vm-test.sh <upatch dir> <ckb binary> [<Option B upatch dir>]
+#
+# <upatch dir> holds ckb-node-shield.upatch + .unload.upatch built from
+# the default rules (Option A). The optional third directory holds a
+# build with Option B uncommented and peers = ["192.0.2.0/24"].
 #
 # Phase 1 (rules bite): a copy of bash at the labeled path is the probe.
 #   Every action runs twice, first with the shield unloaded (must succeed,
@@ -10,11 +14,16 @@
 #   says). The control shows a refusal comes from the shield, not the host.
 # Phase 2 (node still works): the real ckb on a dev chain, inside the
 #   sandbox, must sync its RPC, mine blocks and refuse `ckb init --force`.
+# Phase 3 (Option B, if given): outbound to an unlisted address is
+#   refused, loopback still allowed. NET_DENY_TARGET (default 10.0.2.2/22,
+#   QEMU's host address) must accept connections, which the control checks.
 
 set -u
 
 upatches=${1:?upatch directory}
 ckb_src=${2:?ckb binary}
+netb=${3:-}
+deny_target=${NET_DENY_TARGET:-10.0.2.2/22}
 runtime=${SHIRUDO:-shirudo-runtime}
 bin=/usr/local/bin/ckb
 work=/tmp/ckb-node-shield-test
@@ -24,8 +33,8 @@ pass=0 fail=0
 ok()  { pass=$((pass + 1)); printf 'PASS  %s\n' "$*"; }
 bad() { fail=$((fail + 1)); printf 'FAIL  %s\n' "$*"; }
 
-load()   { "$runtime" upatch load "$upatches/ckb-node-shield.upatch" >/dev/null; }
-unload() { "$runtime" upatch unload "$upatches/ckb-node-shield.unload.upatch" >/dev/null 2>&1 || true; }
+load()   { "$runtime" upatch load "${1:-$upatches}/ckb-node-shield.upatch" >/dev/null; }
+unload() { "$runtime" upatch unload "${1:-$upatches}/ckb-node-shield.unload.upatch" >/dev/null 2>&1 || true; }
 
 # probe <expect: allow|deny> <label> <bash command>
 probe()
@@ -71,6 +80,7 @@ cleanup()
 {
 	pkill -x ckb 2>/dev/null; sleep 1
 	unload
+	[ -z "$netb" ] || unload "$netb"
 	rm -f "$bin"; rm -rf "$work" "$node"
 }
 trap cleanup EXIT
@@ -116,6 +126,19 @@ fi
 [ -s "$node/data/logs/run.log" ] && ok "[real ckb] wrote its own logs" || bad "[real ckb] no run.log"
 grep -q 'Permission denied' "$node/run.out" && bad "[real ckb] node hit EACCES during normal run" \
 	|| ok "[real ckb] no EACCES in node output"
+
+if [ -n "$netb" ]; then
+	echo "== phase 3: Option B (private network) probe"
+	pkill -x ckb 2>/dev/null; sleep 1
+	unload
+	install -m 0755 /bin/bash "$bin"
+	probe allow "[control] connect to $deny_target" "exec 3<>/dev/tcp/$deny_target && exec 3>&-"
+	load "$netb" || { bad "load the Option B shield"; exit 1; }
+	probe deny  "[option B] connect to unlisted $deny_target" "exec 3<>/dev/tcp/$deny_target && exec 3>&-"
+	probe allow "[option B] connect to 127.0.0.1 (listed)" 'exec 3<>/dev/tcp/127.0.0.1/22 && exec 3>&-'
+	probe deny  "[option B] exec still refused" '/bin/true'
+	unload "$netb"
+fi
 
 echo "== $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
