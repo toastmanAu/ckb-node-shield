@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 [package]
 name = "ckb-node-shield"
-description = "Sandbox CKB full nodes (ckb) and Fiber nodes (fnn): no program execution, no writes to their config, binaries or the host's login and boot files."
+description = "Sandbox CKB full nodes (ckb), Fiber nodes (fnn) and CKB light clients (ckb-light-client): no program execution, no writes to their config, binaries or the host's login and boot files."
 license = "GPL-2.0 OR BSD-2-Clause"
 authors = ["Authors of shirudo", "Wyltek Industries"]
 
@@ -33,6 +33,12 @@ paths = ["/usr/local/bin/ckb", "/usr/bin/ckb", "/opt/ckb/ckb", "/usr/local/ckb/c
 id = "fnn"
 bit = 0x2
 paths = ["/usr/local/bin/fnn", "/usr/bin/fnn", "/opt/fiber/fnn", "/opt/fnn/fnn"]
+
+# The executables that put a task in the ckb-light (light client) sandbox.
+[[upatches.policy]]
+id = "ckb-light"
+bit = 0x4
+paths = ["/usr/local/bin/ckb-light-client", "/usr/bin/ckb-light-client", "/opt/ckb-light-client/ckb-light-client", "/opt/ckb-light/ckb-light-client"]
 
 [upatches.tree]
 id = "ckb-node-shield"

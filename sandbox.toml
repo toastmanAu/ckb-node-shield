@@ -3,8 +3,9 @@
 # The rules of the ckb sandbox. A pattern matches the LAST component of a
 # path only, so "ckb.toml" covers every ckb.toml on the host.
 #
-# Two sandboxes: [sandbox.ckb] for the CKB full node, [sandbox.fnn] for
-# the Fiber node. Each has its own network choice.
+# Three sandboxes: [sandbox.ckb] for the CKB full node, [sandbox.fnn] for
+# the Fiber node, [sandbox.ckb-light] for the CKB light client. Each has
+# its own network choice.
 #
 # NETWORK: pick ONE of two options per sandbox.
 #   Option A (default) - public node: it may connect to any peer. Leave
@@ -26,6 +27,7 @@
 # CKB RPC that fnn reads the chain from. A hostname behind a CDN changes
 # IPs, so Option B suits fnn pointed at your OWN CKB node.
 # fiber_ckb_rpc = ["192.168.1.10/32"]
+# light_peers = ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.7/32"]
 
 [sandbox.ckb]
 # A CKB node starts no other program, so it may execute nothing beyond
@@ -96,6 +98,41 @@ rename = [
 ]
 write = [
 	"config.yml", "fnn", "fnn-cli", "*.so", "*.so.?",
+	"authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+
+[sandbox.ckb-light]
+# The light client starts no other program either.
+exec = []
+
+# --- Option B, part 2 of 2 for ckb-light --- (Option A: leave commented)
+# A light client syncs from full nodes that serve light-client
+# protocols; list the ones you run or trust.
+# network = ["@local", "@light_peers"]
+
+[sandbox.ckb-light.deny]
+# The light client writes no .toml file at all, so "*.toml" protects its
+# config whatever it is called (testnet.toml, mainnet.toml, config.toml).
+# It holds no wallet keys; data/network/secret_key is only its P2P id.
+create = [
+	"*.toml", "ckb-light-client", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+rename = [
+	"*.toml", "ckb-light-client", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+write = [
+	"*.toml", "ckb-light-client", "*.so", "*.so.?",
 	"authorized_keys", "authorized_keys2",
 	".bashrc", ".bash_profile", ".profile", ".zshrc",
 	"*.service", "*.timer", "*.socket", "crontab",

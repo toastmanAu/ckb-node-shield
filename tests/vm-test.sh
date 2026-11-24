@@ -18,6 +18,9 @@
 #   the probe at /usr/local/bin/fnn checks the fnn sandbox's own rules,
 #   then the real fnn starts on testnet inside the sandbox (needs
 #   internet) and must serve node_info and still write its backups.
+# Phase 6+7 (light client, if LC=<ckb-light-client> LC_CONFIG=<testnet.toml>):
+#   the probe checks the ckb-light rules, then the real client syncs
+#   testnet headers inside the sandbox (needs internet).
 # Phase 3 (Option B, if given): outbound to an unlisted address is
 #   refused, loopback still allowed. NET_DENY_TARGET (default 10.0.2.2/22,
 #   QEMU's host address) must accept connections, which the control checks.
@@ -113,8 +116,32 @@ fnn_start() # <log>
 	return 1
 }
 
+lbin=/usr/local/bin/ckb-light-client
+lnode=/var/lib/ckb-light-shield-test
+
+lc_actions()
+{
+	local mode=$1 deny=deny
+	[ "$mode" = control ] && deny=allow
+	fresh_work; echo '[rpc]' > "$work/testnet.toml"; mkdir -p "$work/data/network"
+	export PROBE_BIN=$lbin
+	probe "$deny" "[$mode light] exec /bin/true"             '/bin/true'
+	probe "$deny" "[$mode light] append to testnet.toml"     "echo pwned >> $work/testnet.toml"
+	probe "$deny" "[$mode light] create config.toml"         ": > $work/config.toml"
+	probe "$deny" "[$mode light] create authorized_keys"     ": > $work/authorized_keys"
+	probe allow   "[$mode light] write data/network/peers"   "echo p > $work/data/network/addr_manager.db"
+	probe allow   "[$mode light] config.yml (fnn's rule only)" "echo x > $work/config.yml"
+	unset PROBE_BIN
+}
+
+lc_tip() { curl -s -m 5 -H 'content-type: application/json' \
+	-d '{"id":1,"jsonrpc":"2.0","method":"get_tip_header","params":[]}' \
+	http://127.0.0.1:9000 | sed -n 's/.*"number":"\(0x[0-9a-f]*\)".*/\1/p'; }
+
 cleanup()
 {
+	pkill -x ckb-light-clien 2>/dev/null
+	rm -f "$lbin"; rm -rf "$lnode"
 	pkill -x ckb 2>/dev/null; pkill -x fnn 2>/dev/null; sleep 1
 	rm -f "$fbin"; rm -rf "$fnode"
 	unload
@@ -212,6 +239,37 @@ if [ -n "${FNN:-}" ]; then
 	grep -qi 'permission denied' "$fnode/run.out" && bad "[real fnn] node hit EACCES" \
 		|| ok "[real fnn] no EACCES in node output"
 	pkill -x fnn; sleep 1
+	unload
+fi
+
+if [ -n "${LC:-}" ]; then
+	echo "== phase 6: light client probe (bash at $lbin)"
+	pkill -x ckb 2>/dev/null; pkill -x fnn 2>/dev/null; sleep 1
+	unload
+	install -m 0755 /bin/bash "$lbin"
+	lc_actions control
+	load || { bad "load the shield"; exit 1; }
+	lc_actions sandbox
+	unload
+
+	echo "== phase 7: real light client ($("$LC" --version 2>/dev/null)) on testnet"
+	install -m 0755 "$LC" "$lbin"
+	rm -rf "$lnode"; mkdir -p "$lnode"
+	cp "${LC_CONFIG:?LC_CONFIG}" "$lnode/testnet.toml"
+	load || { bad "load the shield"; exit 1; }
+	( cd "$lnode" && RUST_LOG=info "$lbin" run --config-file "$lnode/testnet.toml" >"$lnode/run.out" 2>&1 & )
+	tip=
+	for _ in $(seq 1 30); do sleep 2; tip=$(lc_tip); [ -n "$tip" ] && [ $((tip)) -gt 0 ] && break; done
+	if [ -n "$tip" ] && [ $((tip)) -gt 0 ]; then
+		ok "[real light] synced testnet headers in the sandbox, tip $((tip))"
+	else
+		bad "[real light] no tip; see $lnode/run.out"; tail -5 "$lnode/run.out"
+	fi
+	[ -s "$lnode/data/network/secret_key" ] && ok "[real light] wrote its P2P key + store" \
+		|| bad "[real light] no data/network/secret_key"
+	grep -qi 'permission denied' "$lnode/run.out" && bad "[real light] client hit EACCES" \
+		|| ok "[real light] no EACCES in client output"
+	pkill -x ckb-light-clien; sleep 1
 	unload
 fi
 

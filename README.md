@@ -1,34 +1,36 @@
 # ckb-node-shield
 
 [shirudo](https://github.com/shirudo-dev/shirudo) shields that sandbox a
-[CKB](https://github.com/nervosnetwork/ckb) full node (`ckb`) and a
-[Fiber](https://github.com/nervosnetwork/fiber) node (`fnn`) in the
-kernel, with BPF LSM programs. They limit what an attacker who gets code
+[CKB](https://github.com/nervosnetwork/ckb) full node (`ckb`), a
+[Fiber](https://github.com/nervosnetwork/fiber) node (`fnn`) and a
+[CKB light client](https://github.com/nervosnetwork/ckb-light-client)
+(`ckb-light-client`) in the kernel, with BPF LSM programs. They limit what an attacker who gets code
 running inside the node can do next. They do not fix the bug the
 attacker used.
 
-One package holds two sandboxes, `ckb` and `fnn`, each with its own
+One package holds three sandboxes, `ckb`, `fnn` and `ckb-light`, each with its own
 rules. A task that executed one of the binaries, and every task it
 starts, is held to that sandbox's rules:
 
-| Rule | `ckb` sandbox | `fnn` sandbox |
-|---|---|---|
-| `exec = []` | runs no other program: no shell, no `curl`, no dropped miner | same |
-| network, Option A (default) | any peer | any peer |
-| network, Option B (commented out) | only listed peers | only listed peers + your CKB RPC |
-| no create/rename/write of these **names** | `ckb.toml`, `ckb-miner.toml`, `default.db-options`, `ckb`, `ckb-cli` | `config.yml` (holds the RPC `biscuit_public_key`), `fnn`, `fnn-cli` |
-| ...and in both | `*.so`, `authorized_keys`, `.bashrc`/`.profile`/`.zshrc`, `*.service`/`*.timer`/`*.socket`, `crontab`, `cron.*`, `ld.so.preload`, `sudoers`, `passwd`, `shadow` | same |
+| Rule | `ckb` sandbox | `fnn` sandbox | `ckb-light` sandbox |
+|---|---|---|---|
+| `exec = []` | runs no other program: no shell, no `curl`, no dropped miner | same | same |
+| network, Option A (default) | any peer | any peer | any peer |
+| network, Option B (commented out) | only listed peers | only listed peers + your CKB RPC | only listed full nodes |
+| no create/rename/write of these **names** | `ckb.toml`, `ckb-miner.toml`, `default.db-options`, `ckb`, `ckb-cli` | `config.yml` (holds the RPC `biscuit_public_key`), `fnn`, `fnn-cli` | `*.toml` (its config, whatever it's called), `ckb-light-client` |
+| ...and in all three | `*.so`, `authorized_keys`, `.bashrc`/`.profile`/`.zshrc`, `*.service`/`*.timer`/`*.socket`, `crontab`, `cron.*`, `ld.so.preload`, `sudoers`, `passwd`, `shadow` | same | same |
 
 Every refusal is `EACCES`. The nodes' own work is unaffected:
 - `ckb` still writes its DB, peer store, logs and indexer, and runs P2P and RPC.
 - `fnn` still writes `fiber/store`, its startup backups and logs, and runs P2P and RPC.
+- `ckb-light-client` still writes `data/store`, `data/network` (peer store and P2P key), and runs P2P and RPC.
 
 ## Requirements
 
 A target running shirudo: a BPF-LSM kernel with signed BPF programs, a TPM
 and the shirudo runtime. See shirudo's `Documentation/start/install.rst`.
 Tested on shirudo's test VM (shirudo `0e595d8`, kernel `7.4-shirudo-ci`)
-with CKB `v0.210.0` and Fiber `v0.10.1`. See [Tested](#tested).
+with CKB `v0.210.0`, Fiber `v0.10.1` and the light client `v0.5.4`. See [Tested](#tested).
 
 ## Choosing the network option
 
@@ -63,6 +65,8 @@ skipped with a journal warning:
 ```
 ckb: /usr/local/bin/ckb  /usr/bin/ckb  /opt/ckb/ckb  /usr/local/ckb/ckb
 fnn: /usr/local/bin/fnn  /usr/bin/fnn  /opt/fiber/fnn  /opt/fnn/fnn
+ckb-light: /usr/local/bin/ckb-light-client  /usr/bin/ckb-light-client
+           /opt/ckb-light-client/ckb-light-client  /opt/ckb-light/ckb-light-client
 ```
 
 If a binary lives elsewhere, for example `~/.fiber/bin/fnn`, add its
@@ -107,6 +111,10 @@ any shirudo package.
   readable by fnn's group (`root:fnn 0440`, directory `root:fnn 0750`).
   An exploited `fnn` can then read the key, as it must, but can't swap
   in its own.
+- **`ckb-light-client` holds no wallet keys.** `data/network/secret_key`
+  is only its P2P identity. The real risk is a compromised client giving
+  wrong answers over RPC, and no sandbox can stop that. What the sandbox
+  stops is the compromise spreading to the host.
 - **Reading secrets is out of scope.** These sandboxes restrict
   execution, connections and writes, not reads. A compromised node can
   read its own keys. Option B is what stops it sending them to an
@@ -121,10 +129,11 @@ any shirudo package.
 
 ```sh
 FNN=<fnn> FNN_CONFIG=<testnet config.yml> \
+LC=<ckb-light-client> LC_CONFIG=<testnet.toml> \
   tests/vm-test.sh <upatch dir> <ckb binary> [<Option B upatch dir>]
 ```
 
-This runs as root on a shirudo test VM: 41 checks, all passing,
+This runs as root on a shirudo test VM: 56 checks, all passing,
 repeatable.
 
 1. **The `ckb` rules work.** A probe, which is a copy of `bash`
@@ -155,6 +164,17 @@ repeatable.
    throwaway key, inside the sandbox:
    - `node_info` answers
    - the startup backup is written
+   - nothing is refused
+6. **The `ckb-light` rules work.** The same probe approach at the
+   `ckb-light-client` path:
+   - exec, appending to `testnet.toml`, creating `config.toml` and
+     `authorized_keys` are refused
+   - its peer-store writes stay allowed
+   - `config.yml` is not refused, because that is only `fnn`'s rule
+7. **A real light client still works.** v0.5.4 on testnet, started for
+   the first time inside the sandbox:
+   - it syncs headers and answers `get_tip_header`
+   - it writes its P2P key and store
    - nothing is refused
 
 ## License
