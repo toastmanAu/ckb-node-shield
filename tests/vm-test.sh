@@ -21,6 +21,11 @@
 # Phase 6+7 (light client, if LC=<ckb-light-client> LC_CONFIG=<testnet.toml>):
 #   the probe checks the ckb-light rules, then the real client syncs
 #   testnet headers inside the sandbox (needs internet).
+# Phase 8+9 (mining proxy, if SP_NODE=<node binary> SP_APP=<proxy dir>
+#   holding solo-proxy.js, its modules and a config.json for 127.0.0.1):
+#   the probe checks the stratum-proxy rules, then the real proxy runs in
+#   the sandbox against the dev-chain ckb and must hand a stratum miner a
+#   job (mining.notify).
 # Phase 3 (Option B, if given): outbound to an unlisted address is
 #   refused, loopback still allowed. NET_DENY_TARGET (default 10.0.2.2/22,
 #   QEMU's host address) must accept connections, which the control checks.
@@ -138,8 +143,30 @@ lc_tip() { curl -s -m 5 -H 'content-type: application/json' \
 	-d '{"id":1,"jsonrpc":"2.0","method":"get_tip_header","params":[]}' \
 	http://127.0.0.1:9000 | sed -n 's/.*"number":"\(0x[0-9a-f]*\)".*/\1/p'; }
 
+pbin=/opt/ckb-stratum-proxy/node
+papp=/var/lib/stratum-proxy-shield-test
+
+sp_actions()
+{
+	local mode=$1 deny=deny
+	[ "$mode" = control ] && deny=allow
+	fresh_work; echo '{}' > "$work/config.json"; echo '//' > "$work/solo-proxy.js"
+	mkdir -p "$work/logs"
+	export PROBE_BIN=$pbin
+	probe "$deny" "[$mode proxy] exec /bin/true"              '/bin/true'
+	probe "$deny" "[$mode proxy] rewrite config.json"         "echo '{\"node\":{}}' > $work/config.json"
+	probe "$deny" "[$mode proxy] append to solo-proxy.js"     "echo 'evil()' >> $work/solo-proxy.js"
+	probe "$deny" "[$mode proxy] create backdoor.js"          ": > $work/backdoor.js"
+	probe "$deny" "[$mode proxy] create authorized_keys"      ": > $work/authorized_keys"
+	probe allow   "[$mode proxy] write logs/session-1.jsonl"  "echo '{}' > $work/logs/session-1.jsonl"
+	probe allow   "[$mode proxy] ckb.toml (ckb's rule only)"  "echo x >> $work/ckb.toml"
+	unset PROBE_BIN
+}
+
 cleanup()
 {
+	pkill -x node 2>/dev/null
+	rm -f "$pbin"; rmdir "$(dirname "$pbin")" 2>/dev/null; rm -rf "$papp"
 	pkill -x ckb-light-clien 2>/dev/null
 	rm -f "$lbin"; rm -rf "$lnode"
 	pkill -x ckb 2>/dev/null; pkill -x fnn 2>/dev/null; sleep 1
@@ -270,6 +297,40 @@ if [ -n "${LC:-}" ]; then
 	grep -qi 'permission denied' "$lnode/run.out" && bad "[real light] client hit EACCES" \
 		|| ok "[real light] no EACCES in client output"
 	pkill -x ckb-light-clien; sleep 1
+	unload
+fi
+
+if [ -n "${SP_NODE:-}" ]; then
+	echo "== phase 8: mining proxy probe (bash at $pbin)"
+	pkill -x ckb 2>/dev/null; pkill -x fnn 2>/dev/null; pkill -x ckb-light-clien 2>/dev/null; sleep 1
+	unload
+	mkdir -p "$(dirname "$pbin")"
+	install -m 0755 /bin/bash "$pbin"
+	sp_actions control
+	load || { bad "load the shield"; exit 1; }
+	sp_actions sandbox
+	unload
+
+	echo "== phase 9: real mining proxy (node $("$SP_NODE" --version)) against the dev chain"
+	install -m 0755 "$SP_NODE" "$pbin"
+	install -m 0755 "$ckb_src" "$bin"
+	rm -rf "$papp"; mkdir -p "$papp"; cp -r "${SP_APP:?SP_APP}/." "$papp/"
+	load || { bad "load the shield"; exit 1; }
+	"$bin" run -C "$node" >"$node/run2.out" 2>&1 &
+	for _ in $(seq 1 15); do sleep 1; [ -n "$(rpc)" ] && break; done
+	( cd "$papp" && "$pbin" solo-proxy.js >"$papp/proxy.out" 2>&1 & )
+	sleep 4
+	job=$(exec 3<>/dev/tcp/127.0.0.1/3333 || exit 1
+		printf '%s\n' '{"id":1,"method":"mining.subscribe","params":["shield-test/1.0"]}' \
+			'{"id":2,"method":"mining.authorize","params":["ckt1test.worker","x"]}' >&3
+		timeout 10 grep -m1 -o '"method":"mining.notify"' <&3)
+	[ -n "$job" ] && ok "[real proxy] sandboxed proxy handed a stratum miner a job" \
+		|| { bad "[real proxy] no mining.notify; see $papp/proxy.out"; tail -5 "$papp/proxy.out"; }
+	ls "$papp"/logs/session-*.jsonl >/dev/null 2>&1 && ok "[real proxy] wrote its session log" \
+		|| bad "[real proxy] no logs/session-*.jsonl"
+	grep -qiE 'permission denied|EACCES' "$papp/proxy.out" && bad "[real proxy] proxy hit EACCES" \
+		|| ok "[real proxy] no EACCES in proxy output"
+	pkill -x node; pkill -x ckb; sleep 1
 	unload
 fi
 

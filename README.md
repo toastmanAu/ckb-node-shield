@@ -4,33 +4,36 @@
 [CKB](https://github.com/nervosnetwork/ckb) full node (`ckb`), a
 [Fiber](https://github.com/nervosnetwork/fiber) node (`fnn`) and a
 [CKB light client](https://github.com/nervosnetwork/ckb-light-client)
-(`ckb-light-client`) in the kernel, with BPF LSM programs. They limit what an attacker who gets code
+(`ckb-light-client`) and a Node.js stratum mining proxy (such as
+[ckb-stratum-proxy](https://github.com/toastmanAu/ckb-stratum-proxy)) in
+the kernel, with BPF LSM programs. They limit what an attacker who gets code
 running inside the node can do next. They do not fix the bug the
 attacker used.
 
-One package holds three sandboxes, `ckb`, `fnn` and `ckb-light`, each with its own
+One package holds four sandboxes, `ckb`, `fnn`, `ckb-light` and `stratum-proxy`, each with its own
 rules. A task that executed one of the binaries, and every task it
 starts, is held to that sandbox's rules:
 
-| Rule | `ckb` sandbox | `fnn` sandbox | `ckb-light` sandbox |
-|---|---|---|---|
-| `exec = []` | runs no other program: no shell, no `curl`, no dropped miner | same | same |
-| network, Option A (default) | any peer | any peer | any peer |
-| network, Option B (commented out) | only listed peers | only listed peers + your CKB RPC | only listed full nodes |
-| no create/rename/write of these **names** | `ckb.toml`, `ckb-miner.toml`, `default.db-options`, `ckb`, `ckb-cli` | `config.yml` (holds the RPC `biscuit_public_key`), `fnn`, `fnn-cli` | `*.toml` (its config, whatever it's called), `ckb-light-client` |
-| ...and in all three | `*.so`, `authorized_keys`, `.bashrc`/`.profile`/`.zshrc`, `*.service`/`*.timer`/`*.socket`, `crontab`, `cron.*`, `ld.so.preload`, `sudoers`, `passwd`, `shadow` | same | same |
+| Rule | `ckb` | `fnn` | `ckb-light` | `stratum-proxy` |
+|---|---|---|---|---|
+| `exec = []` | runs no other program: no shell, no `curl`, no dropped miner | same | same | same |
+| network, Option A (default) | any peer | any peer | any peer | anywhere |
+| network, Option B (commented out) | only listed peers | only listed peers + your CKB RPC | only listed full nodes | only its CKB node (recommended) |
+| no create/rename/write of these **names** | `ckb.toml`, `ckb-miner.toml`, `default.db-options`, `ckb`, `ckb-cli` | `config.yml` (holds the RPC `biscuit_public_key`), `fnn`, `fnn-cli` | `*.toml` (its config, whatever it's called), `ckb-light-client` | `config.json`, `*.js`/`*.mjs`/`*.cjs`/`*.node` (its code), `package*.json`, `*.html`, `node` |
+| ...and in all four | `*.so`, `authorized_keys`, `.bashrc`/`.profile`/`.zshrc`, `*.service`/`*.timer`/`*.socket`, `crontab`, `cron.*`, `ld.so.preload`, `sudoers`, `passwd`, `shadow` | same | same | same |
 
 Every refusal is `EACCES`. The nodes' own work is unaffected:
 - `ckb` still writes its DB, peer store, logs and indexer, and runs P2P and RPC.
 - `fnn` still writes `fiber/store`, its startup backups and logs, and runs P2P and RPC.
 - `ckb-light-client` still writes `data/store`, `data/network` (peer store and P2P key), and runs P2P and RPC.
+- The mining proxy still writes `logs/session-*.jsonl`, serves miners on its stratum port and its stats page, and talks to its CKB node.
 
 ## Requirements
 
 A target running shirudo: a BPF-LSM kernel with signed BPF programs, a TPM
 and the shirudo runtime. See shirudo's `Documentation/start/install.rst`.
 Tested on shirudo's test VM (shirudo `0e595d8`, kernel `7.4-shirudo-ci`)
-with CKB `v0.210.0`, Fiber `v0.10.1` and the light client `v0.5.4`. See [Tested](#tested).
+with CKB `v0.210.0`, Fiber `v0.10.1`, the light client `v0.5.4` and `ckb-stratum-proxy` on Node.js `v22.22.0`. See [Tested](#tested).
 
 ## Choosing the network option
 
@@ -67,7 +70,23 @@ ckb: /usr/local/bin/ckb  /usr/bin/ckb  /opt/ckb/ckb  /usr/local/ckb/ckb
 fnn: /usr/local/bin/fnn  /usr/bin/fnn  /opt/fiber/fnn  /opt/fnn/fnn
 ckb-light: /usr/local/bin/ckb-light-client  /usr/bin/ckb-light-client
            /opt/ckb-light-client/ckb-light-client  /opt/ckb-light/ckb-light-client
+stratum-proxy: /opt/ckb-stratum-proxy/node  /usr/local/lib/ckb-stratum-proxy/node
 ```
+
+### The mining proxy needs its own `node`
+
+The proxy is a script, and the label goes on the program the kernel
+executes, which is the `node` interpreter. Labeling `/usr/bin/node` would
+sandbox every Node.js program on the host. Instead, give the proxy a
+private copy of `node` and run it with that:
+
+```sh
+sudo install -D -m 0755 "$(command -v node)" /opt/ckb-stratum-proxy/node
+# systemd: ExecStart=/opt/ckb-stratum-proxy/node /opt/ckb-stratum-proxy/app/solo-proxy.js
+```
+
+Load the shield after installing that copy, and load it again after
+replacing it, for example on a Node.js upgrade.
 
 If a binary lives elsewhere, for example `~/.fiber/bin/fnn`, add its
 path to the policy's `paths` and rebuild. A path can't use a wildcard
@@ -115,6 +134,13 @@ any shirudo package.
   is only its P2P identity. The real risk is a compromised client giving
   wrong answers over RPC, and no sandbox can stop that. What the sandbox
   stops is the compromise spreading to the host.
+- **The mining proxy's payout.** In solo mode, the block reward goes to
+  the node's `block_assembler` in `ckb.toml`, which the `ckb` sandbox
+  protects. The proxy's `config.json` picks which node it trusts (and the
+  address it displays). A rewritten `config.json` could point it at a
+  node that pays someone else, which is why the proxy can't write it.
+  Its `.js` files are protected for the same reason: they are the code
+  that builds and submits blocks.
 - **Reading secrets is out of scope.** These sandboxes restrict
   execution, connections and writes, not reads. A compromised node can
   read its own keys. Option B is what stops it sending them to an
@@ -130,10 +156,11 @@ any shirudo package.
 ```sh
 FNN=<fnn> FNN_CONFIG=<testnet config.yml> \
 LC=<ckb-light-client> LC_CONFIG=<testnet.toml> \
+SP_NODE=<node binary> SP_APP=<proxy dir with config.json for 127.0.0.1> \
   tests/vm-test.sh <upatch dir> <ckb binary> [<Option B upatch dir>]
 ```
 
-This runs as root on a shirudo test VM: 56 checks, all passing,
+This runs as root on a shirudo test VM: 73 checks, all passing,
 repeatable.
 
 1. **The `ckb` rules work.** A probe, which is a copy of `bash`
@@ -175,6 +202,18 @@ repeatable.
    the first time inside the sandbox:
    - it syncs headers and answers `get_tip_header`
    - it writes its P2P key and store
+   - nothing is refused
+8. **The `stratum-proxy` rules work.** The same probe approach at the
+   proxy's `node` path:
+   - exec, rewriting `config.json`, appending to `solo-proxy.js`,
+     creating `backdoor.js` and `authorized_keys` are refused
+   - writing `logs/session-*.jsonl` stays allowed
+   - `ckb.toml` is not refused, because that is only `ckb`'s rule
+9. **A real mining proxy still works.** `ckb-stratum-proxy` on Node.js
+   v22.22.0, inside the sandbox, against the dev-chain `ckb`:
+   - a stratum client subscribes and authorizes, and gets a
+     `mining.notify` job
+   - the proxy writes its session log
    - nothing is refused
 
 ## License

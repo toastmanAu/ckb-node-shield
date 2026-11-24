@@ -3,8 +3,9 @@
 # The rules of the ckb sandbox. A pattern matches the LAST component of a
 # path only, so "ckb.toml" covers every ckb.toml on the host.
 #
-# Three sandboxes: [sandbox.ckb] for the CKB full node, [sandbox.fnn] for
-# the Fiber node, [sandbox.ckb-light] for the CKB light client. Each has
+# Four sandboxes: [sandbox.ckb] for the CKB full node, [sandbox.fnn] for
+# the Fiber node, [sandbox.ckb-light] for the CKB light client and
+# [sandbox.stratum-proxy] for a Node.js stratum mining proxy. Each has
 # its own network choice.
 #
 # NETWORK: pick ONE of two options per sandbox.
@@ -28,6 +29,9 @@
 # IPs, so Option B suits fnn pointed at your OWN CKB node.
 # fiber_ckb_rpc = ["192.168.1.10/32"]
 # light_peers = ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.7/32"]
+# The CKB node(s) the mining proxy reads templates from and submits to
+# (RPC + WebSocket ports), and in pool mode the upstream pool's IPs.
+# proxy_upstream = ["192.168.1.10/32"]
 
 [sandbox.ckb]
 # A CKB node starts no other program, so it may execute nothing beyond
@@ -133,6 +137,45 @@ rename = [
 ]
 write = [
 	"*.toml", "ckb-light-client", "*.so", "*.so.?",
+	"authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+
+[sandbox.stratum-proxy]
+# The proxy starts no other program.
+exec = []
+
+# --- Option B, part 2 of 2 for stratum-proxy --- (Option A: leave
+# commented). RECOMMENDED here: a solo proxy dials out ONLY to its CKB
+# node, so the allowlist is one line and stops it phoning home. Miners
+# connecting IN to port 3333 and the stats page are never restricted.
+# network = ["@local", "@proxy_upstream"]
+
+[sandbox.stratum-proxy.deny]
+# config.json picks the node the proxy trusts and the payout address it
+# shows; *.js/*.mjs/*.cjs/*.node are its code, package*.json its deps;
+# *.html its dashboard. It writes only logs/session-*.jsonl.
+create = [
+	"config.json", "*.js", "*.mjs", "*.cjs", "*.node", "package.json", "package-lock.json",
+	"*.html", "node", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+rename = [
+	"config.json", "*.js", "*.mjs", "*.cjs", "*.node", "package.json", "package-lock.json",
+	"*.html", "node", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+write = [
+	"config.json", "*.js", "*.mjs", "*.cjs", "*.node", "package.json", "package-lock.json",
+	"*.html", "node", "*.so", "*.so.?",
 	"authorized_keys", "authorized_keys2",
 	".bashrc", ".bash_profile", ".profile", ".zshrc",
 	"*.service", "*.timer", "*.socket", "crontab",
