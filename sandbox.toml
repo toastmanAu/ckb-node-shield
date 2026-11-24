@@ -3,7 +3,10 @@
 # The rules of the ckb sandbox. A pattern matches the LAST component of a
 # path only, so "ckb.toml" covers every ckb.toml on the host.
 #
-# NETWORK: pick ONE of two options.
+# Two sandboxes: [sandbox.ckb] for the CKB full node, [sandbox.fnn] for
+# the Fiber node. Each has its own network choice.
+#
+# NETWORK: pick ONE of two options per sandbox.
 #   Option A (default) - public node: it may connect to any peer. Leave
 #     both Option B blocks below commented out.
 #   Option B - private node: it may connect ONLY to the networks you
@@ -13,10 +16,16 @@
 #     to and keep 127.0.0.0/8 for the local DNS resolver. Inbound
 #     connections (peers dialing you, RPC clients) are never restricted.
 
-# --- Option B, part 1 of 2 ---
+# --- Option B, part 1 of 2 (shared by both sandboxes) ---
+# Uncomment [networks] and `local` for EITHER sandbox's Option B, plus
+# the list(s) that sandbox names.
 # [networks]
 # local = ["127.0.0.0/8", "::1/128"]
-# peers = ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.7/32"]
+# ckb_peers = ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.7/32"]
+# fiber_peers = ["10.0.0.0/8", "192.168.0.0/16", "203.0.113.7/32"]
+# CKB RPC that fnn reads the chain from. A hostname behind a CDN changes
+# IPs, so Option B suits fnn pointed at your OWN CKB node.
+# fiber_ckb_rpc = ["192.168.1.10/32"]
 
 [sandbox.ckb]
 # A CKB node starts no other program, so it may execute nothing beyond
@@ -24,7 +33,7 @@
 exec = []
 
 # --- Option B, part 2 of 2 --- (Option A: leave this commented out)
-# network = ["@local", "@peers"]
+# network = ["@local", "@ckb_peers"]
 
 [sandbox.ckb.deny]
 # What the node never needs to write while it runs: its own config and
@@ -50,6 +59,43 @@ rename = [
 write = [
 	"ckb.toml", "ckb-miner.toml", "default.db-options",
 	"ckb", "ckb-cli", "*.so", "*.so.?",
+	"authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+
+[sandbox.fnn]
+# A Fiber node starts no other program either.
+exec = []
+
+# --- Option B, part 2 of 2 for fnn --- (Option A: leave commented out)
+# network = ["@local", "@fiber_peers", "@fiber_ckb_rpc"]
+
+[sandbox.fnn.deny]
+# config.yml holds the RPC auth (biscuit_public_key) and every setting
+# an attacker would change to keep control; fnn never writes it.
+#
+# NOT denied: "key" (ckb/key, the funding key) and "sk" (fiber/sk). fnn
+# writes files with those names into fiber/backups/<time>/ on EVERY
+# start, and a rule matches names, not directories, so denying them
+# breaks the node. Protect ckb/key with ownership instead, see README.
+create = [
+	"config.yml", "fnn", "fnn-cli", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+rename = [
+	"config.yml", "fnn", "fnn-cli", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+write = [
+	"config.yml", "fnn", "fnn-cli", "*.so", "*.so.?",
 	"authorized_keys", "authorized_keys2",
 	".bashrc", ".bash_profile", ".profile", ".zshrc",
 	"*.service", "*.timer", "*.socket", "crontab",

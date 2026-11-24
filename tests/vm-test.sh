@@ -14,6 +14,10 @@
 #   says). The control shows a refusal comes from the shield, not the host.
 # Phase 2 (node still works): the real ckb on a dev chain, inside the
 #   sandbox, must sync its RPC, mine blocks and refuse `ckb init --force`.
+# Phase 4+5 (Fiber, if FNN=<fnn binary> FNN_CONFIG=<testnet config.yml>):
+#   the probe at /usr/local/bin/fnn checks the fnn sandbox's own rules,
+#   then the real fnn starts on testnet inside the sandbox (needs
+#   internet) and must serve node_info and still write its backups.
 # Phase 3 (Option B, if given): outbound to an unlisted address is
 #   refused, loopback still allowed. NET_DENY_TARGET (default 10.0.2.2/22,
 #   QEMU's host address) must accept connections, which the control checks.
@@ -40,7 +44,7 @@ unload() { "$runtime" upatch unload "${1:-$upatches}/ckb-node-shield.unload.upat
 probe()
 {
 	local expect=$1 label=$2 cmd=$3 out rc
-	out=$("$bin" -c "$cmd" 2>&1); rc=$?
+	out=$("${PROBE_BIN:-$bin}" -c "$cmd" 2>&1); rc=$?
 	if [ "$expect" = allow ]; then
 		[ $rc -eq 0 ] && ok "$label: allowed" || bad "$label: expected allowed, rc=$rc $out"
 	else
@@ -76,9 +80,43 @@ actions()
 	probe allow   "[$mode] connect to 127.0.0.1"       'exec 3<>/dev/tcp/127.0.0.1/22 && exec 3>&-'
 }
 
+fbin=/usr/local/bin/fnn
+fnode=/var/lib/fnn-node-shield-test
+
+# The fnn sandbox's rules. The backup writes MUST stay allowed: fnn
+# writes fiber/backups/<time>/key and .../sk on every start.
+fnn_actions()
+{
+	local mode=$1 deny=deny
+	[ "$mode" = control ] && deny=allow
+	fresh_work; echo 'rpc: {}' > "$work/config.yml"; mkdir -p "$work/fiber/backups/1"
+	export PROBE_BIN=$fbin
+	probe "$deny" "[$mode fnn] exec /bin/true"              '/bin/true'
+	probe "$deny" "[$mode fnn] append to config.yml"        "echo pwned >> $work/config.yml"
+	probe "$deny" "[$mode fnn] create authorized_keys"      ": > $work/authorized_keys"
+	probe "$deny" "[$mode fnn] create evil.service"         ": > $work/evil.service"
+	probe allow   "[$mode fnn] backup writes .../key"       "echo k > $work/fiber/backups/1/key"
+	probe allow   "[$mode fnn] backup writes .../sk"        "echo s > $work/fiber/backups/1/sk"
+	probe allow   "[$mode fnn] ckb.toml (ckb's rule only)"  "echo x >> $work/ckb.toml"
+	unset PROBE_BIN
+}
+
+fnn_rpc() { curl -s -m 5 -H 'content-type: application/json' \
+	-d '{"id":1,"jsonrpc":"2.0","method":"node_info","params":[]}' \
+	http://127.0.0.1:8227 | grep -o '"version":"[^"]*"'; }
+
+fnn_start() # <log>
+{
+	( cd "$fnode" && FIBER_SECRET_KEY_PASSWORD=vm-test-only RUST_LOG=info \
+		"$fbin" -c "$fnode/config.yml" -d "$fnode" >"$1" 2>&1 & )
+	for _ in $(seq 1 30); do sleep 2; fnn_rpc >/dev/null && return 0; done
+	return 1
+}
+
 cleanup()
 {
-	pkill -x ckb 2>/dev/null; sleep 1
+	pkill -x ckb 2>/dev/null; pkill -x fnn 2>/dev/null; sleep 1
+	rm -f "$fbin"; rm -rf "$fnode"
 	unload
 	[ -z "$netb" ] || unload "$netb"
 	rm -f "$bin"; rm -rf "$work" "$node"
@@ -138,6 +176,43 @@ if [ -n "$netb" ]; then
 	probe allow "[option B] connect to 127.0.0.1 (listed)" 'exec 3<>/dev/tcp/127.0.0.1/22 && exec 3>&-'
 	probe deny  "[option B] exec still refused" '/bin/true'
 	unload "$netb"
+fi
+
+if [ -n "${FNN:-}" ]; then
+	echo "== phase 4: fnn probe (bash at $fbin)"
+	pkill -x ckb 2>/dev/null; sleep 1
+	unload
+	install -m 0755 /bin/bash "$fbin"
+	fnn_actions control
+	load || { bad "load the shield"; exit 1; }
+	fnn_actions sandbox
+	unload
+
+	echo "== phase 5: real fnn ($("$FNN" --version 2>/dev/null)) on testnet"
+	install -m 0755 "$FNN" "$fbin"
+	rm -rf "$fnode"; mkdir -p "$fnode/ckb"
+	cp "${FNN_CONFIG:?FNN_CONFIG}" "$fnode/config.yml"
+	# A throwaway, unfunded testnet key. The first start encrypts it and
+	# creates fiber/sk: do that once BEFORE the load, as the README says.
+	head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$fnode/ckb/key"
+	chmod 600 "$fnode/ckb/key"
+	fnn_start "$fnode/first.out" || { bad "fnn first start (unsandboxed)"; tail -5 "$fnode/first.out"; exit 1; }
+	pkill -x fnn; sleep 2
+	before=$(ls "$fnode/fiber/backups" | wc -l)
+	load || { bad "load the shield"; exit 1; }
+	if fnn_start "$fnode/run.out"; then
+		ok "[real fnn] node in the sandbox serves node_info ($(fnn_rpc))"
+	else
+		bad "[real fnn] node did not come up; see $fnode/run.out"; tail -5 "$fnode/run.out"
+	fi
+	sleep 3
+	after=$(ls "$fnode/fiber/backups" | wc -l)
+	[ "$after" -gt "$before" ] && ok "[real fnn] startup backup written in the sandbox ($before -> $after)" \
+		|| bad "[real fnn] no new backup ($before -> $after)"
+	grep -qi 'permission denied' "$fnode/run.out" && bad "[real fnn] node hit EACCES" \
+		|| ok "[real fnn] no EACCES in node output"
+	pkill -x fnn; sleep 1
+	unload
 fi
 
 echo "== $pass passed, $fail failed"
