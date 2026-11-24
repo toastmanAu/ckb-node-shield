@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# The rules of the ckb sandbox. A pattern matches the LAST component of a
+# path only, so "ckb.toml" covers every ckb.toml on the host.
+
+[sandbox.ckb]
+# A CKB node starts no other program, so it may execute nothing beyond
+# its own binary. This is the rule that stops "exploit, then shell".
+exec = []
+
+# No `network` key: a public node must reach peers anywhere on the
+# internet, so connections stay unrestricted. A node that only talks to
+# a fixed set of peers (a private relay, an RPC-only node behind a
+# firewall) can add e.g.  network = ["10.0.0.0/8", "203.0.113.7/32"]
+
+[sandbox.ckb.deny]
+# What the node never needs to write while it runs: its own config and
+# binaries, shared libraries, and the files an attacker writes to get
+# back in after a restart (SSH keys, shell rc files, systemd units,
+# cron, the loader preload list, account databases).
+create = [
+	"ckb.toml", "ckb-miner.toml", "default.db-options",
+	"ckb", "ckb-cli", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+rename = [
+	"ckb.toml", "ckb-miner.toml", "default.db-options",
+	"ckb", "ckb-cli", "*.so", "*.so.?",
+	".ssh", "authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab", "cron.*",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
+write = [
+	"ckb.toml", "ckb-miner.toml", "default.db-options",
+	"ckb", "ckb-cli", "*.so", "*.so.?",
+	"authorized_keys", "authorized_keys2",
+	".bashrc", ".bash_profile", ".profile", ".zshrc",
+	"*.service", "*.timer", "*.socket", "crontab",
+	"ld.so.preload", "sudoers", "passwd", "shadow",
+]
